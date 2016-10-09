@@ -1,53 +1,23 @@
-/***********************************************************
- * 说明:本程序用于演示ping命令的实现原理                   *
- ***********************************************************/
-#include <stdio.h>
-#include <signal.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#include <netinet/in.h>
-#include <netinet/ip.h>
-#include <netinet/ip_icmp.h>
-#include <netdb.h>
-#include <setjmp.h>
-#include <errno.h>
+#include "myping.h"
 
-#include <stdlib.h>
-#include <sys/time.h>
-#include <strings.h>
-
-#define PACKET_SIZE     4096
-#define MAX_WAIT_TIME   5
-#define MAX_NO_PACKETS  3
-
-char send_packet_[PACKET_SIZE]; // 发送的包
-char recv_packet_[PACKET_SIZE]; // 接收的包
+char send_packet_[PACKET_SIZE] = {0}; // 发送的包
+char recv_packet_[PACKET_SIZE] = {0}; // 接收的包
 int sockfd_ = 0; // 描述符
 int data_len_ = 56; // 长度
 int send_count_ = 0; // 发送包的数量
 int received_count_ = 0; // 接收包的数量
-struct sockaddr_in dest_addr_; // 目标地址
-pid_t pid_; // 本进程号
+pid_t pid_ = 0; // 本进程号
 struct sockaddr_in from_addr_; // 远程地址
+struct sockaddr_in dest_addr_; // 目标地址
 
-
-void statistics(int signo);
-unsigned short cal_chksum(unsigned short *addr,int len);
-int pack(int pack_no);
-int send_packet(void);
-int recv_packet(void);
-int unpack(char *buf,int len);
-struct timeval tv_sub(struct timeval *out,struct timeval *in);
 
 void statistics(int signo)
-{ 
+{
     printf("\n--------------------PING statistics-------------------\n");
     printf("%d packets transmitted, %d received , %%%d lost\n",
-            send_count_,
-            received_count_,
-            (send_count_-received_count_)/send_count_*100);
+           send_count_,
+           received_count_,
+           (send_count_-received_count_)/send_count_*100);
     close(sockfd_);
     exit(1);
 }
@@ -67,7 +37,7 @@ unsigned short cal_chksum(unsigned short *addr,int len)
     }
     /*若ICMP报头为奇数个字节，会剩下最后一字节。把最后一个字节视为一个2字节数据的高字节，这个2字节数据的低字节为0，继续累加*/
     if( nleft == 1)
-    { 
+    {
         *(unsigned char *)(&answer) = *(unsigned char *)w;
         sum += answer;
     }
@@ -79,7 +49,7 @@ unsigned short cal_chksum(unsigned short *addr,int len)
 
 /*设置ICMP报头*/
 int pack(int pack_no)
-{       
+{
     int packsize;
     struct icmp *icmp;
     struct timeval *tval;
@@ -99,15 +69,15 @@ int pack(int pack_no)
 
 /*发送ICMP报文*/
 int send_packet()
-{    
+{
     int packetsize;
     packetsize = pack(send_count_); /*设置ICMP报头*/
     if( sendto(sockfd_,
-                send_packet_,
-                packetsize,
-                0,
-                (struct sockaddr *)&dest_addr_,
-                sizeof(dest_addr_) ) < 0)
+               send_packet_,
+               packetsize,
+               0,
+               (struct sockaddr *)&dest_addr_,
+               sizeof(dest_addr_) ) < 0)
     {
         perror("sendto error");
         return -1;
@@ -117,7 +87,7 @@ int send_packet()
 
 /*接收所有ICMP报文*/
 int recv_packet()
-{       
+{
     int n;
     extern int errno;
 
@@ -134,6 +104,7 @@ int recv_packet()
                         &fromlen) ) < 0)
     {
         if(errno == EINTR) continue;
+
         perror("recvfrom error");
         return -1;
     }
@@ -145,7 +116,7 @@ int recv_packet()
 }
 /*剥去ICMP报头*/
 int unpack(char *buf,int len)
-{      
+{
     int iphdrlen;
     struct ip *ip;
     struct icmp *icmp;
@@ -171,93 +142,18 @@ int unpack(char *buf,int len)
         rtt = dt.tv_sec*1000 + ((double)dt.tv_usec)/1000;  /*以毫秒为单位计算rtt*/
         /*显示相关信息*/
         printf("%d byte from %s: icmp_seq=%u ttl=%d rtt=%.3f ms\n",
-                len,
-                inet_ntoa(from_addr_.sin_addr),
-                icmp->icmp_seq,
-                ip->ip_ttl,
-                rtt);
+               len,
+               inet_ntoa(from_addr_.sin_addr),
+               icmp->icmp_seq,
+               ip->ip_ttl,
+               rtt);
         return 0;
     }
     else
         return -1;
 }
 
-int main(int argc,char *argv[])
-{       
-    struct hostent *host;
-    struct protoent *protocol;
-    unsigned long inaddr=0l;
-    //int waittime=MAX_WAIT_TIME;
-    int size = 50 * 1024;
 
-    if(argc < 2)
-    {   
-        printf("usage:%s hostname/IP address\n",argv[0]);
-        exit(1);
-    }
-
-    if( (protocol = getprotobyname("icmp") )==NULL)
-    { 
-        perror("getprotobyname");
-        exit(1);
-    }
-    /*生成使用ICMP的原始套接字,这种套接字只有root才能生成*/
-    if( (sockfd_ = socket(AF_INET,SOCK_RAW, protocol->p_proto) )<0)
-    {
-        perror("socket error");
-        exit(1);
-    }
-    /* 回收root权限,设置当前用户权限*/
-    setuid(getuid());
-    /*扩大套接字接收缓冲区到50K这样做主要为了减小接收缓冲区溢出的
-      的可能性,若无意中ping一个广播地址或多播地址,将会引来大量应答*/
-    setsockopt(sockfd_, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size) );
-    bzero(&dest_addr_,sizeof(dest_addr_));
-    dest_addr_.sin_family = AF_INET;
-
-    /*判断是主机名还是ip地址*/
-    if( (inaddr = inet_addr(argv[1]) ) == INADDR_NONE)
-    { 
-        if((host = gethostbyname(argv[1]) ) == NULL) /*是主机名*/
-        {
-            perror("gethostbyname error");
-            exit(1);
-        }
-        memcpy( (char *)&dest_addr_.sin_addr, host->h_addr, host->h_length);
-    }
-    else /*是ip地址*/
-        memcpy( (char *)&dest_addr_.sin_addr, (char *)&inaddr, sizeof(int));
-
-    /*获取main的进程id,用于设置ICMP的标志符*/
-    pid_ = getpid();
-    printf("PING %s(%s): %d bytes data in ICMP packets.\n",
-            argv[1],
-            inet_ntoa(dest_addr_.sin_addr),
-            data_len_);
-
-    // 循环次数是发送/接收的包的数量
-    for(int i = 0; i < MAX_NO_PACKETS; ++i)
-    {
-        if(-1 == send_packet())  /*发送1个ICMP报文*/
-        {
-            break;
-        }
-        ++send_count_;
-
-        if(-1 == recv_packet())  /*接收1个ICMP报文*/
-        {
-            break;
-        }
-        ++received_count_;
-
-        //  sleep(1); /*每隔一秒发送一个ICMP报文*/
-    }
-
-    statistics(SIGALRM); /*进行统计*/
-
-    return 0;
-
-}
 /*两个timeval结构相减*/
 struct timeval tv_sub(struct timeval *a, struct timeval *b)
 {
